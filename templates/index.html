@@ -176,6 +176,11 @@ tr:hover td { background: rgba(255,255,255,0.02); }
   <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
     <div class="section-title" style="margin:0">All Trades</div>
     <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+      <select id="filter-view" onchange="renderTrades()" style="width:auto; font-size:13px; padding:6px 10px;">
+        <option value="all">All Trades</option>
+        <option value="weekly">Group by Week</option>
+        <option value="monthly">Group by Month</option>
+      </select>
       <select id="filter-result" onchange="renderTrades()" style="width:auto; font-size:13px; padding:6px 10px;">
         <option value="">All Results</option><option>Win</option><option>Loss</option><option>Break Even</option>
       </select>
@@ -189,7 +194,14 @@ tr:hover td { background: rgba(255,255,255,0.02); }
 
 <!-- STATS PAGE -->
 <div id="page-stats" class="page">
-  <div class="section-title">Performance Stats</div>
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; flex-wrap:wrap; gap:10px;">
+    <div class="section-title" style="margin:0">Performance Stats</div>
+    <select id="stats-view" onchange="loadStats()" style="width:auto; font-size:13px; padding:6px 10px;">
+      <option value="overall">Overall</option>
+      <option value="weekly">Weekly Breakdown</option>
+      <option value="monthly">Monthly Breakdown</option>
+    </select>
+  </div>
   <div id="stats-content"></div>
 </div>
 
@@ -330,19 +342,9 @@ async function loadAndRenderTrades() {
   renderTrades();
 }
 
-function renderTrades() {
-  const filterResult = document.getElementById('filter-result').value;
-  const filterSession = document.getElementById('filter-session').value;
-  let filtered = trades.filter(t =>
-    (!filterResult || t.result === filterResult) &&
-    (!filterSession || t.session === filterSession)
-  );
-  const container = document.getElementById('trades-list');
-  if (!filtered.length) {
-    container.innerHTML = '<div class="empty-state">Koi trade nahi hai. Log Trade se add karo!</div>';
-    return;
-  }
-  container.innerHTML = filtered.map(t => `
+function tradeCardHTML(t) {
+  const hasMore = t.notes || t.ai_analysis || t.chart_image;
+  return `
     <div class="trade-card">
       <div class="trade-header">
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
@@ -355,8 +357,9 @@ function renderTrades() {
           <span style="font-size:18px;font-weight:600;color:${parseFloat(t.pnl)>=0?'var(--green)':'var(--red)'}">
             ${parseFloat(t.pnl)>=0?'+':''}$${parseFloat(t.pnl).toFixed(0)}
           </span>
-          <button style="padding:5px 10px;font-size:12px" onclick="editTrade(${t.id})">✏️</button>
-          <button class="btn-red" style="padding:5px 10px;font-size:12px" onclick="deleteTrade(${t.id})">🗑</button>
+          ${hasMore ? `<button style="padding:5px 10px;font-size:12px;color:var(--blue);border-color:rgba(59,130,246,0.4)" onclick="toggleMore(${t.id})">&#9660; More</button>` : ''}
+          <button style="padding:5px 10px;font-size:12px" onclick="editTrade(${t.id})">&#9998;</button>
+          <button class="btn-red" style="padding:5px 10px;font-size:12px" onclick="deleteTrade(${t.id})">&#128465;</button>
         </div>
       </div>
       <div class="trade-meta">
@@ -367,12 +370,164 @@ function renderTrades() {
         <span>${t.contracts} contract${t.contracts>1?'s':''}</span>
         <span>Emotion: ${t.emotion}</span>
       </div>
-      ${t.mistakes ? `<p style="font-size:12px;color:var(--red);margin-bottom:4px">⚠ ${t.mistakes}</p>` : ''}
-      ${t.notes ? `<p style="font-size:12px;color:var(--text2)">${t.notes}</p>` : ''}
-      ${t.ai_analysis ? `<div class="ai-box">${t.ai_analysis}</div>` : ''}
-      ${t.chart_image ? `<img src="${t.chart_image}" style="max-width:180px;margin-top:8px;border-radius:6px;border:1px solid var(--border)" alt="chart">` : ''}
-    </div>
-  `).join('');
+      ${t.mistakes ? `<p style="font-size:12px;color:var(--red);margin-top:2px">&#9888; ${t.mistakes}</p>` : ''}
+      ${hasMore ? `
+      <div id="more-${t.id}" style="display:none;margin-top:10px;border-top:1px solid var(--border);padding-top:10px;">
+        ${t.notes ? `<p style="font-size:12px;color:var(--text2);margin-bottom:6px">${t.notes}</p>` : ''}
+        ${t.ai_analysis ? `<div class="ai-box" style="margin-bottom:8px">${t.ai_analysis}</div>` : ''}
+        ${t.chart_image ? `<img src="${t.chart_image}" onclick="openImgModal(this.src)" style="max-width:180px;border-radius:6px;border:1px solid var(--border);cursor:pointer;" alt="chart">` : ''}
+      </div>` : ''}
+    </div>`;
+}
+
+// Returns Monday of the week containing the given date, as YYYY-MM-DD
+function getWeekStart(dateStr) {
+  const d = new Date(dateStr + 'T00:00:00');
+  const day = d.getDay(); // 0=Sun .. 6=Sat
+  const diff = (day === 0 ? -6 : 1 - day); // shift to Monday
+  d.setDate(d.getDate() + diff);
+  return d.toISOString().split('T')[0];
+}
+
+function formatDateShort(dateStr) {
+  const d = new Date(dateStr + 'T00:00:00');
+  return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' });
+}
+
+function getMonthKey(dateStr) {
+  return dateStr.slice(0, 7); // YYYY-MM
+}
+
+function getMonthLabel(monthKey) {
+  const d = new Date(monthKey + '-01T00:00:00');
+  return d.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+}
+
+// Theme dictionary: category label -> keywords to match (case-insensitive)
+const MISTAKE_THEMES = [
+  { label: 'Emotional Management', keywords: ['revenge', 'emotion', 'anxious', 'panic', 'fear', 'greed', 'overconfiden'] },
+  { label: 'FOMO Entries', keywords: ['fomo', 'late entry', 'jaldi', 'late li', 'pehle lena chahiye'] },
+  { label: 'Exit Discipline (Cutting Early/Late)', keywords: ['cut kr', 'cut ho', 'c2c', '1:1 pe', 'book kr', 'trail kr', 'sl hit hone se pehle', 'before sl', 'manually cut'] },
+  { label: 'HTF Bias / Confluence Ignored', keywords: ['15 min', '15m', 'htf', 'bias ignore', 'resistance', 'against', 'counter-trend', 'downside fvg', 'upside fvg'] },
+  { label: 'Position Sizing', keywords: ['size', 'sizing', 'quantity', 'contracts', '% lagaya', 'lot'] },
+  { label: 'Conviction / Confidence Issue', keywords: ['not sure', 'sure nahi', 'confus', 'doubt'] },
+  { label: 'Patience / Waiting for Confirmation', keywords: ['wait nahi', 'confirmation', 'patience', 'jaldi'] },
+];
+
+const STRENGTH_THEMES = [
+  { label: 'ICT concepts samajhte ho', keywords: ['solid', 'textbook', 'confluence', 'concept sahi', 'concept samajh'] },
+  { label: 'FVG identify kar lete ho', keywords: ['fvg'] },
+  { label: 'OB identify kar lete ho', keywords: ['ob retest', 'order block'] },
+  { label: 'Multi-timeframe analysis theek hai', keywords: ['multi-timeframe', 'multi timeframe', '15min', '15m fvg', '4h'] },
+  { label: 'Direction mostly sahi hoti hai', keywords: ['direction bhi correct', 'direction sahi', 'directionally'] },
+];
+
+function extractThemes(groupTrades, themeList, useResultFilter) {
+  const counts = {};
+  themeList.forEach(t => counts[t.label] = 0);
+  groupTrades.forEach(t => {
+    if (useResultFilter === 'loss' && t.result === 'Win') return;
+    if (useResultFilter === 'win' && t.result !== 'Win') return;
+    const text = ((t.mistakes || '') + ' ' + (t.notes || '') + ' ' + (t.ai_analysis || '')).toLowerCase();
+    themeList.forEach(theme => {
+      if (theme.keywords.some(kw => text.includes(kw))) counts[theme.label]++;
+    });
+  });
+  return Object.entries(counts).filter(([,c]) => c > 0).sort((a,b) => b[1]-a[1]);
+}
+
+function groupSummaryHTML(groupTrades) {
+  const wins = groupTrades.filter(t => t.result === 'Win').length;
+  const total = groupTrades.length;
+  const pnl = groupTrades.reduce((s, t) => s + parseFloat(t.pnl || 0), 0);
+  const winRate = total ? Math.round(wins / total * 100) : 0;
+  const mistakeThemes = extractThemes(groupTrades, MISTAKE_THEMES, 'loss');
+  const strengthThemes = extractThemes(groupTrades, STRENGTH_THEMES, null);
+  return { wins, total, pnl, winRate, mistakeThemes, strengthThemes };
+}
+
+function themesHTML(s) {
+  let html = '';
+  if (s.strengthThemes.length) {
+    html += `<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border);">
+      <p style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;">Strengths</p>
+      ${s.strengthThemes.map(([label, count]) => `<p style="font-size:12px;color:var(--green);margin-bottom:4px;">&#9989; ${label}</p>`).join('')}
+    </div>`;
+  }
+  if (s.mistakeThemes.length) {
+    html += `<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border);">
+      <p style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;">Mistakes & Improvement Areas</p>
+      ${s.mistakeThemes.map(([label, count]) => `<p style="font-size:12px;color:var(--red);margin-bottom:4px;">&#9888; ${label}${count>1?` <span style="color:var(--text3)">(${count}x)</span>`:''}</p>`).join('')}
+    </div>`;
+  }
+  if (!s.strengthThemes.length && !s.mistakeThemes.length) {
+    html += `<p style="font-size:12px;color:var(--text3);margin-top:10px;">Is period mein clear pattern detect nahi hua.</p>`;
+  }
+  return html;
+}
+
+function renderTrades() {
+  const filterResult = document.getElementById('filter-result').value;
+  const filterSession = document.getElementById('filter-session').value;
+  const filterView = document.getElementById('filter-view').value;
+  let filtered = trades.filter(t =>
+    (!filterResult || t.result === filterResult) &&
+    (!filterSession || t.session === filterSession)
+  );
+  const container = document.getElementById('trades-list');
+  if (!filtered.length) {
+    container.innerHTML = '<div class="empty-state">Koi trade nahi hai. Log Trade se add karo!</div>';
+    return;
+  }
+
+  // sort by date desc for grouping
+  const sorted = [...filtered].sort((a, b) => (a.date < b.date ? 1 : -1));
+
+  if (filterView === 'all') {
+    container.innerHTML = sorted.map(t => tradeCardHTML(t)).join('');
+    return;
+  }
+
+  // Build groups
+  const groups = {};
+  sorted.forEach(t => {
+    const key = filterView === 'weekly' ? getWeekStart(t.date) : getMonthKey(t.date);
+    if (!groups[key]) groups[key] = [];
+    groups[key].push(t);
+  });
+  const sortedKeys = Object.keys(groups).sort((a, b) => (a < b ? 1 : -1));
+
+  container.innerHTML = sortedKeys.map(key => {
+    const groupTrades = groups[key];
+    const s = groupSummaryHTML(groupTrades);
+    let label;
+    if (filterView === 'weekly') {
+      const start = new Date(key + 'T00:00:00');
+      const end = new Date(start); end.setDate(end.getDate() + 6);
+      label = `Week of ${formatDateShort(key)} – ${formatDateShort(end.toISOString().split('T')[0])}`;
+    } else {
+      label = getMonthLabel(key);
+    }
+    const pnlColor = s.pnl >= 0 ? 'var(--green)' : 'var(--red)';
+    return `
+      <div class="card" style="margin-bottom:14px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:6px;">
+          <strong style="font-size:15px">${label}</strong>
+          <div style="display:flex;gap:14px;align-items:center;font-size:13px;">
+            <span style="color:var(--text2)">${s.total} trade${s.total>1?'s':''}</span>
+            <span style="color:${s.winRate>=50?'var(--green)':'var(--red)'}">${s.winRate}% WR</span>
+            <span style="color:${pnlColor};font-weight:600">${s.pnl>=0?'+':''}$${s.pnl.toFixed(0)}</span>
+          </div>
+        </div>
+        ${themesHTML(s)}
+        <div style="margin-top:10px;">
+          <button style="font-size:12px;padding:5px 10px;" onclick="this.nextElementSibling.style.display = this.nextElementSibling.style.display==='none'?'block':'none'; this.textContent = this.textContent.includes('Show') ? '▲ Hide trades' : '▼ Show trades';">&#9660; Show trades</button>
+          <div style="display:none;margin-top:10px;">
+            ${groupTrades.map(t => tradeCardHTML(t)).join('')}
+          </div>
+        </div>
+      </div>`;
+  }).join('');
 }
 
 async function deleteTrade(id) {
@@ -413,6 +568,11 @@ function editTrade(id) {
 }
 
 async function loadStats() {
+  const view = document.getElementById('stats-view').value;
+  if (view === 'weekly' || view === 'monthly') {
+    await loadStatsBreakdown(view);
+    return;
+  }
   const res = await fetch('/api/stats');
   const s = await res.json();
   const container = document.getElementById('stats-content');
@@ -466,9 +626,98 @@ async function loadStats() {
   container.innerHTML = html;
 }
 
+async function loadStatsBreakdown(view) {
+  const container = document.getElementById('stats-content');
+  if (!trades.length) {
+    const res = await fetch('/api/trades');
+    trades = await res.json();
+  }
+  if (!trades.length) { container.innerHTML = '<div class="empty-state">Pehle kuch trades log karo!</div>'; return; }
+
+  // Only last 3 months by default
+  const cutoff = new Date();
+  cutoff.setMonth(cutoff.getMonth() - 3);
+  const cutoffStr = cutoff.toISOString().split('T')[0];
+  const recent = trades.filter(t => t.date >= cutoffStr);
+  const pool = recent.length ? recent : trades;
+
+  const groups = {};
+  pool.forEach(t => {
+    const key = view === 'weekly' ? getWeekStart(t.date) : getMonthKey(t.date);
+    if (!groups[key]) groups[key] = [];
+    groups[key].push(t);
+  });
+  const sortedKeys = Object.keys(groups).sort((a, b) => (a < b ? 1 : -1));
+
+  let html = `<p style="font-size:12px;color:var(--text3);margin-bottom:16px;">Showing last 3 months. Saari trades hamesha "All Trades" tab mein safe hain.</p>`;
+
+  html += sortedKeys.map(key => {
+    const groupTrades = groups[key];
+    const s = groupSummaryHTML(groupTrades);
+    let label;
+    if (view === 'weekly') {
+      const start = new Date(key + 'T00:00:00');
+      const end = new Date(start); end.setDate(end.getDate() + 6);
+      label = `Week of ${formatDateShort(key)} – ${formatDateShort(end.toISOString().split('T')[0])}`;
+    } else {
+      label = getMonthLabel(key);
+    }
+    const pnlColor = s.pnl >= 0 ? 'var(--green)' : 'var(--red)';
+
+    // setup breakdown within group
+    const setupMap = {};
+    groupTrades.forEach(t => {
+      if (!setupMap[t.setup]) setupMap[t.setup] = { count: 0, pnl: 0 };
+      setupMap[t.setup].count++;
+      setupMap[t.setup].pnl += parseFloat(t.pnl || 0);
+    });
+    const setupRows = Object.entries(setupMap).sort((a,b) => b[1].pnl - a[1].pnl)
+      .map(([setup, d]) => `<tr><td>${setup}</td><td>${d.count}</td><td style="color:${d.pnl>=0?'var(--green)':'var(--red)'}">$${d.pnl>=0?'+':''}${d.pnl.toFixed(0)}</td></tr>`).join('');
+
+    return `
+      <div class="card" style="margin-bottom:14px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:10px;">
+          <strong style="font-size:15px">${label}</strong>
+          <div style="display:flex;gap:14px;align-items:center;font-size:13px;">
+            <span style="color:var(--text2)">${s.total} trade${s.total>1?'s':''}</span>
+            <span style="color:${s.winRate>=50?'var(--green)':'var(--red)'}">${s.winRate}% WR</span>
+            <span style="color:${pnlColor};font-weight:600">${s.pnl>=0?'+':''}$${s.pnl.toFixed(0)}</span>
+          </div>
+        </div>
+        ${setupRows ? `<table><tr><th>Setup</th><th>Trades</th><th>P&L</th></tr>${setupRows}</table>` : ''}
+        ${themesHTML(s)}
+      </div>`;
+  }).join('');
+
+  container.innerHTML = html;
+}
+
 function exportPDF() {
   window.open('/api/export/pdf', '_blank');
   toast('PDF download ho raha hai...');
+}
+
+function toggleMore(id) {
+  const el = document.getElementById('more-' + id);
+  const btn = el.previousElementSibling ? el.closest('.trade-card').querySelector('button[onclick*="toggleMore"]') : null;
+  if (!el) return;
+  if (el.style.display === 'none') {
+    el.style.display = 'block';
+    const b = document.querySelector(`button[onclick="toggleMore(${id})"]`);
+    if (b) b.innerHTML = '&#9650; Less';
+  } else {
+    el.style.display = 'none';
+    const b = document.querySelector(`button[onclick="toggleMore(${id})"]`);
+    if (b) b.innerHTML = '&#9660; More';
+  }
+}
+
+function openImgModal(src) {
+  const modal = document.createElement('div');
+  modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.85);z-index:9999;display:flex;align-items:center;justify-content:center;cursor:pointer;';
+  modal.innerHTML = `<img src="${src}" style="max-width:92%;max-height:92vh;border-radius:10px;border:1px solid var(--border);">`;
+  modal.onclick = () => document.body.removeChild(modal);
+  document.body.appendChild(modal);
 }
 </script>
 </body>
